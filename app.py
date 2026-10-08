@@ -14,6 +14,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from demographics import render_demographic_profiles
 from questions import QUESTIONS, sections
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "cis2026.parquet"
@@ -97,11 +98,55 @@ st.markdown(
         margin: 0.7rem 0 0.9rem 0;
       }}
 
-      /* Hide noisy Streamlit chrome */
-      [data-testid="stToolbar"] {{ visibility: hidden; height: 0; }}
+      /* Quiet chrome — do not hide header (sidebar toggles live there in 1.65) */
       #MainMenu {{ visibility: hidden; }}
       footer {{ visibility: hidden; }}
-      header[data-testid="stHeader"] {{ background: transparent; }}
+      header[data-testid="stHeader"] {{
+        background: transparent;
+        height: 3rem;
+      }}
+      /* Hide only the Deploy button, keep header toggles */
+      [data-testid="stToolbar"] [data-testid="stAppDeployButton"],
+      .stDeployButton {{
+        display: none !important;
+      }}
+
+      /* CLOSE: always show collapse control in the sidebar (not hover-only) */
+      [data-testid="stSidebarHeader"],
+      [data-testid="stSidebarCollapseButton"],
+      [data-testid="stSidebarCollapseButton"] button {{
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+      }}
+      [data-testid="stSidebarCollapseButton"] {{
+        z-index: 1000002 !important;
+      }}
+
+      /* OPEN: when sidebar is collapsed, force expand control visible */
+      [data-testid="stHeader"] [data-testid="stExpandSidebarButton"],
+      [data-testid="stExpandSidebarButton"],
+      [data-testid="stSidebarCollapsedControl"],
+      [data-testid="collapsedControl"] {{
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        z-index: 1000002 !important;
+        position: fixed !important;
+        left: 0.45rem !important;
+        top: 0.55rem !important;
+        background: #FFFFFF !important;
+        border: 1px solid {COLORS["grid"]} !important;
+        border-radius: 10px !important;
+        box-shadow: 0 1px 4px rgba(31,42,46,0.14) !important;
+      }}
+      [data-testid="stExpandSidebarButton"] svg,
+      [data-testid="stSidebarCollapseButton"] svg,
+      [data-testid="stSidebarCollapsedControl"] svg {{
+        fill: {COLORS["ink"]} !important;
+      }}
 
       div[data-testid="stMetric"] {{
         background: #FFFFFF;
@@ -160,9 +205,13 @@ st.markdown(
         background: #FFFFFF;
         border: 1px solid {COLORS["grid"]};
         border-radius: 20px;
-        padding: 0.6rem 0.4rem 0.2rem 0.4rem;
+        padding: 0.75rem 0.6rem 0.5rem 0.6rem;
         margin-bottom: 0.85rem;
-        overflow: hidden;
+        overflow: visible;
+      }}
+      .cis-chart-wrap .js-plotly-plot,
+      .cis-chart-wrap .plot-container {{
+        overflow: visible !important;
       }}
 
       .cis-table-wrap {{
@@ -198,6 +247,78 @@ st.markdown(
 
       [data-testid="stSidebar"] .stCheckbox {{
         margin-bottom: -0.35rem;
+      }}
+
+      /* Demographic Profiles — study at a glance */
+      .glance-head {{
+        display: flex;
+        align-items: stretch;
+        background: #1B3A5F;
+        border-radius: 12px 12px 0 0;
+        overflow: hidden;
+      }}
+      .glance-accent {{
+        width: 8px;
+        background: #C4A035;
+        flex: 0 0 8px;
+      }}
+      .glance-title {{
+        color: #fff;
+        font-family: "Source Sans 3", "Segoe UI", sans-serif;
+        font-weight: 700;
+        font-size: 1.15rem;
+        padding: 0.7rem 1rem;
+      }}
+      .glance-kpis {{
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0;
+        background: #1B3A5F;
+        padding: 0.85rem 0.4rem 1rem 0.4rem;
+        border-radius: 0 0 12px 12px;
+        margin-bottom: 0.75rem;
+      }}
+      .glance-kpi {{ text-align: center; padding: 0.25rem 0.4rem; }}
+      .glance-num {{
+        color: #C4A035;
+        font-size: 1.55rem;
+        font-weight: 700;
+        line-height: 1.15;
+        font-family: "Source Sans 3", "Segoe UI", sans-serif;
+      }}
+      .glance-lab {{
+        color: #E8EEF4;
+        font-size: 0.78rem;
+        margin-top: 0.2rem;
+      }}
+      .glance-region {{
+        border-radius: 12px;
+        padding: 0.85rem 0.9rem;
+        min-height: 7.2rem;
+        border: 1px solid {COLORS["grid"]};
+      }}
+      .glance-region-name {{
+        font-weight: 700;
+        color: #1B3A5F;
+        font-size: 1rem;
+        margin-bottom: 0.2rem;
+      }}
+      .glance-region-n {{
+        color: #1B3A5F;
+        font-size: 0.9rem;
+        margin-bottom: 0.35rem;
+      }}
+      .glance-region-c {{
+        color: {COLORS["slate"]};
+        font-size: 0.8rem;
+        line-height: 1.35;
+      }}
+      table.demo-cis-table th {{
+        background: #1B3A5F !important;
+        color: #fff !important;
+      }}
+      @media (max-width: 900px) {{
+        .glance-kpis {{ grid-template-columns: repeat(2, 1fr); }}
       }}
     </style>
     """,
@@ -257,6 +378,13 @@ def load_data(_mtime: float) -> pd.DataFrame:
         else:
             df["city"] = "Not stated"
     df["city"] = df["city"].astype(str).replace({"nan": "Not stated", "": "Not stated"})
+    if "language" not in df.columns and "s1" in df.columns:
+        df["language"] = df["s1"].astype(str)
+    if "work_status" not in df.columns and "occupation" in df.columns:
+        _nw = {"Housewife", "Student", "Unemployed/ laid off/ retired"}
+        df["work_status"] = df["occupation"].map(
+            lambda x: "Non-working" if str(x) in _nw else "Working"
+        )
     return df
 
 
@@ -441,7 +569,7 @@ def main():
         st.error(str(e))
         return
 
-    # ----- Sidebar filters -----
+    # ----- Sidebar -----
     with st.sidebar:
         st.markdown(
             '<div class="side-brand">Country Image Study 2026</div>'
@@ -449,8 +577,13 @@ def main():
             '<hr class="side-rule"/>',
             unsafe_allow_html=True,
         )
-        st.markdown("**Filters**")
-        st.caption("Narrow the sample, then choose a question.")
+        page = st.radio(
+            "Section",
+            ["Demographic profiles", "Survey findings"],
+            index=0,
+            key="app_section",
+        )
+        st.markdown('<hr class="side-rule"/>', unsafe_allow_html=True)
 
         all_countries = sorted(df_all["country"].dropna().unique().tolist())
         if "sel_countries" not in st.session_state:
@@ -469,60 +602,73 @@ def main():
             key="btn_unsel_all_cty",
             on_click=lambda: st.session_state.update(sel_countries=[]),
         )
-
         countries = st.multiselect(
             "Countries",
             options=all_countries,
             key="sel_countries",
         )
 
-        gender = st.selectbox("Gender", ["All"] + sorted(df_all["gender"].dropna().unique().tolist()))
-        age = st.selectbox(
-            "Age group",
-            ["All"]
-            + [
-                x
-                for x in [
-                    "18-29 years old",
-                    "30-39 years old",
-                    "40-49 years old",
-                    "50-60 years old",
-                    "61-70 years old",
-                ]
-                if x in set(df_all["age_group"].dropna())
-            ],
-        )
-        urban = st.selectbox(
-            "Urban / rural",
-            ["All"] + sorted(df_all["urban_rural"].dropna().unique().tolist()),
-        )
-        edu = st.selectbox(
-            "Education (quota)",
-            ["All"] + sorted(df_all["education"].dropna().unique().tolist()),
-        )
-        income_opts = ["All", "Low", "Medium", "High"]
-        if "income_group" in df_all.columns:
-            income = st.selectbox("Income group", income_opts)
-            with st.expander("How income groups are classified"):
-                st.markdown(INCOME_CLASS_NOTE)
+        gender = age = urban = edu = income = "All"
+        q = None
+        view = "Country comparison (summary %)"
+
+        if page == "Demographic profiles":
+            st.caption("Country selection applies to all demographic tabs.")
         else:
-            income = "All"
+            st.markdown("**Filters**")
+            st.caption("Narrow the sample, then choose a question.")
+            gender = st.selectbox(
+                "Gender",
+                ["All"] + sorted(df_all["gender"].dropna().unique().tolist()),
+                key="flt_gender",
+            )
+            age = st.selectbox(
+                "Age group",
+                ["All"]
+                + [
+                    x
+                    for x in [
+                        "18-29 years old",
+                        "30-39 years old",
+                        "40-49 years old",
+                        "50-60 years old",
+                        "61-70 years old",
+                    ]
+                    if x in set(df_all["age_group"].dropna())
+                ],
+                key="flt_age",
+            )
+            urban = st.selectbox(
+                "Urban / rural",
+                ["All"] + sorted(df_all["urban_rural"].dropna().unique().tolist()),
+                key="flt_urban",
+            )
+            edu = st.selectbox(
+                "Education (quota)",
+                ["All"] + sorted(df_all["education"].dropna().unique().tolist()),
+                key="flt_edu",
+            )
+            income_opts = ["All", "Low", "Medium", "High"]
+            if "income_group" in df_all.columns:
+                income = st.selectbox("Income group", income_opts, key="flt_income")
+                with st.expander("How income groups are classified"):
+                    st.markdown(INCOME_CLASS_NOTE)
+            else:
+                income = "All"
 
-        st.markdown('<hr class="side-rule"/>', unsafe_allow_html=True)
-        sec = st.selectbox("Questionnaire section", sections())
-        q_opts = [q for q in QUESTIONS if q["section"] == sec]
-        q_label = st.selectbox("Question", [q["label"] for q in q_opts])
-        q = next(q for q in q_opts if q["label"] == q_label)
-
-        view = st.radio(
-            "Chart view",
-            ["Country comparison (summary %)", "Full answer mix by country"],
-            index=0,
-        )
+            st.markdown('<hr class="side-rule"/>', unsafe_allow_html=True)
+            sec = st.selectbox("Questionnaire section", sections())
+            q_opts = [q for q in QUESTIONS if q["section"] == sec]
+            q_label = st.selectbox("Question", [q["label"] for q in q_opts])
+            q = next(q for q in q_opts if q["label"] == q_label)
+            view = st.radio(
+                "Chart view",
+                ["Country comparison (summary %)", "Full answer mix by country"],
+                index=0,
+            )
 
     dff = apply_filters(df_all, countries, gender, age, urban, edu, income)
 
-    # ----- Header -----
     st.markdown(
         '<div class="cis-title">A Global Survey on Impression and Understanding of China</div>',
         unsafe_allow_html=True,
@@ -532,14 +678,24 @@ def main():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Respondents in view", f"{len(dff):,}")
-    c2.metric("Countries in view", f"{dff['country'].nunique()}")
-    c3.metric("Full sample", f"{len(df_all):,}")
-
     if len(dff) == 0:
         st.warning("No respondents match these filters. Try widening the selection.")
         return
+
+    # Metric cards only on Survey findings — demographics already shows N in the table
+    if page == "Demographic profiles":
+        render_demographic_profiles(dff)
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Respondents in view", f"{len(dff):,}")
+    c2.metric("Countries in view", f"{dff['country'].nunique()}")
+    n_lang = (
+        int(dff["language"].nunique())
+        if "language" in dff.columns
+        else (int(dff["s1"].nunique()) if "s1" in dff.columns else 0)
+    )
+    c3.metric("Languages in view", f"{n_lang}")
 
     st.markdown(
         f'<div class="cis-qbox"><b>{q["label"]}</b><span>{q["text"]}</span></div>',
