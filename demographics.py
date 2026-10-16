@@ -2,9 +2,55 @@
 """Simple client-facing demographic profile summary for CIS 2026."""
 from __future__ import annotations
 
+import html as html_lib
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+
+def legend_pairs_from_fig(fig) -> list[tuple[str, str]]:
+    """[(color, full label), ...] from Plotly traces — labels never shortened."""
+    pairs: list[tuple[str, str]] = []
+    for tr in fig.data or []:
+        name = getattr(tr, "name", None)
+        if not name or name in {"Country", "trace 0"}:
+            continue
+        if getattr(tr, "showlegend", True) is False:
+            continue
+        color = "#6B7F5A"
+        marker = getattr(tr, "marker", None)
+        if marker is not None:
+            c = getattr(marker, "color", None)
+            if isinstance(c, (list, tuple)):
+                c = c[0] if c else None
+            if isinstance(c, str) and c:
+                color = c
+        line = getattr(tr, "line", None)
+        if color == "#6B7F5A" and line is not None:
+            lc = getattr(line, "color", None)
+            if isinstance(lc, str) and lc:
+                color = lc
+        pairs.append((color, str(name)))
+    return pairs
+
+
+def render_html_legend(items: list[tuple[str, str]]):
+    """Client-facing legend outside Plotly — full text, no SVG clip/truncate."""
+    if not items:
+        return
+    parts = []
+    for color, label in items:
+        parts.append(
+            "<span class='cis-leg-item'>"
+            f"<span class='cis-leg-swatch' style='background:{html_lib.escape(str(color))}'></span>"
+            f"<span class='cis-leg-text'>{html_lib.escape(str(label))}</span>"
+            "</span>"
+        )
+    st.markdown(
+        f"<div class='cis-legend'>{''.join(parts)}</div>",
+        unsafe_allow_html=True,
+    )
 
 NAVY = "#1B3A5F"
 GOLD = "#C4A035"
@@ -173,46 +219,16 @@ def _chart_frame(
     has_legend: bool = True,
     left_margin: int = 120,
     legend_items: int = 0,
+    legend_pairs: list[tuple[str, str]] | None = None,
 ):
     existing_h = fig.layout.height
-    n = legend_items or (len(fig.data) if has_legend else 0)
-    # Full legend text — vertical list when several categories
-    if has_legend and n > 3:
-        bottom = max(100, 28 + n * 18)
-        legend = dict(
-            orientation="v",
-            yanchor="top",
-            y=-0.14,
-            x=0,
-            xanchor="left",
-            bgcolor="rgba(0,0,0,0)",
-            borderwidth=0,
-            font=dict(size=11, color=INK),
-            title=dict(text=""),
-            itemsizing="trace",
-            tracegroupgap=2,
-        )
-        height = max(existing_h or 420, 360 + n * 16)
-    elif has_legend:
-        bottom = 88
-        legend = dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.18,
-            x=0.5,
-            xanchor="center",
-            bgcolor="rgba(0,0,0,0)",
-            borderwidth=0,
-            font=dict(size=11, color=INK),
-            title=dict(text=""),
-            itemsizing="trace",
-            tracegroupgap=12,
-        )
-        height = existing_h if existing_h else 400
-    else:
-        bottom = 56
-        legend = dict(orientation="h", y=1.05, x=0, bgcolor="rgba(0,0,0,0)")
-        height = existing_h if existing_h else 340
+    # Prefer HTML legend — Plotly SVG legends clip long labels ("years o…")
+    pairs = legend_pairs if legend_pairs is not None else (
+        legend_pairs_from_fig(fig) if has_legend else []
+    )
+    bottom = 48
+    height = existing_h if existing_h else (400 if has_legend else 340)
+    _ = legend_items  # reserved for call-site compatibility
 
     fig.update_layout(
         title=dict(
@@ -227,7 +243,7 @@ def _chart_frame(
         plot_bgcolor="#FFFFFF",
         font=dict(color=INK, size=12, family="Source Sans 3, Segoe UI, sans-serif"),
         margin=dict(l=left_margin, r=48, t=56, b=bottom, pad=4),
-        legend=legend,
+        showlegend=False,
         legend_title_text="",
         bargap=0.22,
         height=height,
@@ -241,7 +257,9 @@ def _chart_frame(
     st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown('<hr class="cis-sep"/>', unsafe_allow_html=True)
+    if pairs:
+        render_html_legend(pairs)
+    st.markdown('<div class="cis-sep" role="separator"></div>', unsafe_allow_html=True)
 
 
 def _stacked_100(
@@ -322,7 +340,14 @@ def _stacked_100(
     fig.update_yaxes(title_text="", automargin=True)
     if threshold is not None:
         fig.add_vline(x=threshold, line_dash="dot", line_color=GOLD, line_width=1.8)
-    _chart_frame(fig, title, has_legend=True, legend_items=len(cat_order))
+    pairs = [(cmap.get(lab, TEAL), lab) for lab in cat_order]
+    _chart_frame(
+        fig,
+        title,
+        has_legend=True,
+        legend_items=len(cat_order),
+        legend_pairs=pairs,
+    )
     if threshold is not None:
         st.caption(f"Dotted line = {threshold_label or 'reference'} ({threshold:g}%).")
 

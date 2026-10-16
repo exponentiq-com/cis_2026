@@ -21,8 +21,10 @@ from demographics import (
     GENDER_ORDER,
     INCOME_ORDER,
     URBAN_ORDER,
+    legend_pairs_from_fig,
     ordered_present,
     render_demographic_profiles,
+    render_html_legend,
 )
 from questions import QUESTIONS, resolve_order, sections
 
@@ -213,22 +215,68 @@ st.markdown(
         border-radius: 0;
       }}
       .cis-chart-wrap {{
-        background: #FFFFFF;
+        background: transparent;
         border: none;
         border-radius: 0;
-        padding: 0.35rem 0 0.25rem 0;
-        margin-bottom: 0.35rem;
+        padding: 0.2rem 0 0.1rem 0;
+        margin-bottom: 0.2rem;
         overflow: visible;
       }}
       .cis-chart-wrap .js-plotly-plot,
       .cis-chart-wrap .plot-container {{
         overflow: visible !important;
       }}
-      /* Clean line between visuals — premium minimal */
+      /* Single hairline — not a white band / box */
       .cis-sep {{
-        border: none;
-        border-top: 1px solid {COLORS["grid"]};
-        margin: 1.35rem 0 1.5rem 0;
+        display: block;
+        width: 100%;
+        height: 1px;
+        margin: 1.25rem 0 1.4rem 0;
+        padding: 0;
+        border: 0 !important;
+        border-top: 0 !important;
+        background: {COLORS["grid"]};
+        background-color: {COLORS["grid"]};
+        opacity: 1;
+        box-shadow: none;
+      }}
+      /* Kill Streamlit/browser default <hr> chrome that looks like a white box */
+      hr.cis-sep {{
+        border: 0 !important;
+        background: {COLORS["grid"]} !important;
+        background-color: {COLORS["grid"]} !important;
+        color: transparent !important;
+      }}
+      /* HTML legend — full labels, never SVG-clipped by Plotly */
+      .cis-legend {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 0.55rem 1.25rem;
+        margin: 0.15rem 0 0.85rem 0;
+        padding: 0;
+      }}
+      .cis-leg-item {{
+        display: inline-flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        max-width: 100%;
+        font-size: 0.9rem;
+        line-height: 1.35;
+        color: {COLORS["ink"]};
+      }}
+      .cis-leg-swatch {{
+        width: 11px;
+        height: 11px;
+        margin-top: 0.28rem;
+        flex: 0 0 11px;
+        border-radius: 1px;
+      }}
+      .cis-leg-text {{
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        word-break: break-word;
       }}
 
       .cis-table-wrap {{
@@ -505,70 +553,21 @@ def chart_layout(
     legend_items: int = 0,
     longest_label: int = 0,
 ):
-    """Layout with full legend text (no item-width clipping)."""
+    """Tighten plot chrome. Legends are rendered in HTML (never truncated)."""
+    _ = legend_items, longest_label, legend_below
     top = 28 if title else 16
-    n = legend_items or len(fig.data or [])
-    # Vertical legend below when many / long labels so every word is visible
-    use_v_legend = legend_below and (n > 4 or longest_label > 28)
-    if legend_below:
-        if use_v_legend:
-            bottom = max(100, 28 + n * 18)
-            legend = dict(
-                orientation="v",
-                yanchor="top",
-                y=-0.14,
-                x=0,
-                xanchor="left",
-                bgcolor="rgba(0,0,0,0)",
-                borderwidth=0,
-                font=dict(size=11),
-                itemsizing="trace",
-                tracegroupgap=2,
-                title=dict(text=""),
-            )
-        else:
-            bottom = 88
-            legend = dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.18,
-                x=0,
-                xanchor="left",
-                bgcolor="rgba(0,0,0,0)",
-                borderwidth=0,
-                font=dict(size=11),
-                itemsizing="trace",
-                tracegroupgap=10,
-                title=dict(text=""),
-            )
-    else:
-        bottom = 48
-        legend = dict(
-            orientation="h",
-            y=1.12,
-            x=0,
-            bgcolor="rgba(0,0,0,0)",
-            font=dict(size=11),
-            itemsizing="trace",
-        )
-
     fig.update_layout(
         title=dict(text=title, font=dict(size=15)) if title else None,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#FFFFFF",
         font=dict(color=COLORS["ink"], size=12, family="Source Sans 3, Segoe UI, sans-serif"),
-        margin=dict(l=48, r=28, t=top, b=bottom),
-        legend=legend,
+        margin=dict(l=48, r=28, t=top, b=48),
+        showlegend=False,
         hoverlabel=dict(bgcolor="white", font_size=12),
         bargap=0.28,
-        # Do not hide bar labels when space is tight
         uniformtext_minsize=8,
         uniformtext_mode=False,
     )
-    # Extra height so vertical legends never clip
-    if use_v_legend:
-        base_h = fig.layout.height or 420
-        fig.update_layout(height=max(base_h, 360 + n * 16))
     fig.update_xaxes(
         gridcolor="rgba(0,0,0,0)",
         zeroline=False,
@@ -588,9 +587,22 @@ def chart_layout(
     return fig
 
 
+def show_plotly(fig, *, html_legend: bool = False, legend_pairs=None):
+    """Render chart; optional HTML legend with full labels (no Plotly clip)."""
+    pairs = legend_pairs
+    if html_legend and pairs is None:
+        pairs = legend_pairs_from_fig(fig)
+    fig.update_layout(showlegend=False)
+    st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+    if pairs:
+        render_html_legend(pairs)
+
+
 def after_visual():
-    """Hairline separator between chart blocks."""
-    st.markdown('<hr class="cis-sep"/>', unsafe_allow_html=True)
+    """Single 1px line between chart blocks."""
+    st.markdown('<div class="cis-sep" role="separator"></div>', unsafe_allow_html=True)
 
 
 def add_average_line(fig, avg: float):
@@ -837,9 +849,7 @@ def main():
             f"({avg:.1f}%)</div>",
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.markdown("</div>", unsafe_allow_html=True)
+        show_plotly(fig, html_legend=False)
 
         show = pdf.sort_values("Percent", ascending=False).reset_index(drop=True)
         show = show.rename(columns={"Percent": f"% — {metric_name}"})
@@ -904,9 +914,7 @@ def main():
         )
         if avg_note:
             st.markdown(avg_note, unsafe_allow_html=True)
-        st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.markdown("</div>", unsafe_allow_html=True)
+        show_plotly(fig, html_legend=True)
 
         pivot = tab.pivot_table(
             index="Country", columns="Answer", values="Percent", aggfunc="first"
@@ -1066,11 +1074,7 @@ def main():
                         f"({avg2:.1f}%)</div>",
                         unsafe_allow_html=True,
                     )
-                    st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
-                    st.plotly_chart(
-                        fig2, use_container_width=True, config={"displayModeBar": False}
-                    )
-                    st.markdown("</div>", unsafe_allow_html=True)
+                    show_plotly(fig2, html_legend=True)
 
                     tbl = bdf.copy()
                     if demo_qre_order and demo_dim in tbl.columns:
