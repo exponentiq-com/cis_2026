@@ -3,6 +3,105 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
+# G20 leader list — Q26 / Q27 questionnaire sequence (data spelling for Xi).
+G20_LEADERS_ORDER = [
+    "Mahamoud Ali Youssouf (Chairperson of the African Union Commission)",
+    "Javier Milei (President of Argentina)",
+    "Anthony Albanese (Prime Minister of Australia)",
+    "Luiz Inácio Lula da Silva (President of Brazil)",
+    "Mark Carney (Prime Minister of Canada)",
+    "Xi Jinping (President of China)",
+    "Ursula von der Leyen (President of the European Commission)",
+    "Emmanuel Macron (President of France)",
+    "Friedrich Merz (Chancellor of Germany)",
+    "Narendra Modi (Prime Minister of India)",
+    "Prabowo Subianto (President of Indonesia)",
+    "Giorgia Meloni (Prime Minister of Italy)",
+    "Sanae Takaichi (Prime Minister of Japan)",
+    "Claudia Sheinbaum Pardo (President of Mexico)",
+    "Vladimir Vladimirovich Putin (President of Russia)",
+    "Mohammed bin Salman bin Abdulaziz Al Saud (Crown Prince and Prime Minister of Saudi Arabia)",
+    "Cyril Ramaphosa (President of South Africa)",
+    "Lee Jae Myung (President of South Korea)",
+    "Recep Tayyip Erdoğan (President of Türkiye)",
+    "Andy Burnham (Prime Minister of the United Kingdom)",
+    "Donald Trump (President of the United States)",
+    "Don't know/Hard to answer",
+]
+
+
+def _norm_label(s: str) -> str:
+    s = unicodedata.normalize("NFKC", str(s)).strip().lower()
+    s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    s = re.sub(r"\s+", " ", s)
+    # Treat DK / refuse / numeric 999 as one bucket for ordering
+    if s in {"999", "nan", "none"} or re.search(
+        r"don'?t know|hard to answer|refuse|difficult to answer", s
+    ):
+        return "__dk__"
+    # QRE “Probable” vs data “Probably”
+    s = s.replace("probably,", "probable,").replace("probably ", "probable ")
+    return s
+
+
+def resolve_order(present_values, qre_order: list[str] | None) -> list[str] | None:
+    """Map actual data labels onto QRE option order (fuzzy match on wording)."""
+    if not qre_order:
+        return None
+    present = []
+    seen = set()
+    for v in present_values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s or s.lower() in {"nan", "none"}:
+            continue
+        if s not in seen:
+            present.append(s)
+            seen.add(s)
+
+    # Prefer a readable DK label over bare "999"
+    by_norm: dict[str, list[str]] = {}
+    for p in present:
+        by_norm.setdefault(_norm_label(p), []).append(p)
+
+    def _pick(variants: list[str]) -> str:
+        non_num = [v for v in variants if not v.isdigit()]
+        return non_num[0] if non_num else variants[0]
+
+    resolved: list[str] = []
+    used: set[str] = set()
+    for opt in qre_order:
+        key = _norm_label(opt)
+        variants = by_norm.get(key)
+        match = _pick(variants) if variants else None
+        if match is None:
+            # prefix match for truncated Excel cells
+            for p in present:
+                if p in used:
+                    continue
+                if _norm_label(p).startswith(key[:48]) or key.startswith(
+                    _norm_label(p)[:48]
+                ):
+                    match = p
+                    key = _norm_label(p)
+                    variants = by_norm.get(key, [p])
+                    break
+        if match and match not in used:
+            resolved.append(match)
+            # Consume every synonym (e.g. 999 + Don't know…) for this slot
+            for v in variants or [match]:
+                used.add(v)
+
+    for p in present:
+        if p not in used:
+            resolved.append(p)
+    return resolved
+
+
 # Sections follow the questionnaire structure (closed questions only).
 QUESTIONS: list[dict] = [
     # --- Part I: General impressions ---
@@ -47,7 +146,7 @@ QUESTIONS: list[dict] = [
         "text": "From an objective perspective, how much do you know about China?",
         "kind": "single",
         "col": "q4",
-        "order": ["Very well", "Much", "Some", "A little"],
+        "order": ["Very well", "Much", "Some", "A little", "Nothing"],
         "positive": ["Very well", "Much"],
     },
     {
@@ -58,14 +157,14 @@ QUESTIONS: list[dict] = [
         "kind": "single",
         "col": "q5",
         "order": [
-            "Friendly country",
             "Strategic cooperative partner",
+            "Friendly country",
             "Country with normal relations",
             "Competitor",
             "Enemy",
             "Other",
         ],
-        "positive": ["Friendly country", "Strategic cooperative partner"],
+        "positive": ["Strategic cooperative partner", "Friendly country"],
     },
     {
         "id": "q6",
@@ -91,7 +190,12 @@ QUESTIONS: list[dict] = [
         "text": "Have you visited the Chinese mainland in the past year?",
         "kind": "single",
         "col": "q7",
-        "order": None,
+        "order": [
+            "Have never been to the Chinese mainland",
+            "Not in the past year, but had been there before",
+            "Visited in the past year and had also been there before",
+            "Only visited in the past year",
+        ],
         "positive": None,
     },
     # --- Impressions battery ---
@@ -291,7 +395,7 @@ QUESTIONS: list[dict] = [
         "text": "Among the incumbent leaders of G20 members, who do you think demonstrates the strongest leadership?",
         "kind": "single",
         "col": "q26",
-        "order": None,
+        "order": list(G20_LEADERS_ORDER),
         "positive": None,
         "highlight": "Xi Jinping (President of China)",
     },
@@ -302,7 +406,7 @@ QUESTIONS: list[dict] = [
         "text": "Among the incumbent leaders of G20 members, who do you think is the most respected and most responsible?",
         "kind": "single",
         "col": "q27",
-        "order": None,
+        "order": list(G20_LEADERS_ORDER),
         "positive": None,
         "highlight": "Xi Jinping (President of China)",
     },
@@ -314,7 +418,16 @@ QUESTIONS: list[dict] = [
         "text": "Do you expect or oppose China to play a bigger and greater role in international affairs in the future?",
         "kind": "single",
         "col": "q29",
-        "order": None,
+        "order": [
+            "Extremely expect",
+            "Expect",
+            "Slightly expect",
+            "Absolutely neutral",
+            "Slightly oppose",
+            "Oppose",
+            "Extremely oppose",
+            "Don't know/Hard to answer",
+        ],
         "positive": ["Extremely expect", "Expect", "Slightly expect"],
     },
     {
@@ -324,7 +437,18 @@ QUESTIONS: list[dict] = [
         "text": "Is it possible for China to become the most powerful country in the world in terms of comprehensive national strength? If yes, when?",
         "kind": "single",
         "col": "q32",
-        "order": None,
+        # Data uses “Probably”; QRE uses “Probable” — resolve_order normalises both.
+        "order": [
+            "Probable, within 5 years",
+            "Probable, within 5-10 years",
+            "Possible, within 10-20 years",
+            "Possible, within 20-30 years",
+            "Possible, within 30-50 years",
+            "Perhaps, within 50-100 years",
+            "Perhaps, more than 100 years",
+            "Absolutely impossible",
+            "Don't know/Hard to answer",
+        ],
         "positive": None,
     },
     {
@@ -350,7 +474,13 @@ QUESTIONS: list[dict] = [
         "text": "Since the outbreak of the US-Israel-Iran conflict… China has been committed to promoting peace talks. How should China act?",
         "kind": "single",
         "col": "q39",
-        "order": None,
+        "order": [
+            "Play a leading role in promoting peace talks",
+            "Play a supporting role in promoting peace talks",
+            "Stay neutral and provide necessary humanitarian assistance",
+            "Stay uninvolved, with no participation at all",
+            "Don't know/Hard to answer",
+        ],
         "positive": [
             "Play a leading role in promoting peace talks",
             "Play a supporting role in promoting peace talks",
@@ -363,7 +493,13 @@ QUESTIONS: list[dict] = [
         "text": "How would you like the international order to evolve in the coming years?",
         "kind": "single",
         "col": "q41",
-        "order": None,
+        "order": [
+            "A multipolar world system: equal and orderly multipolarity with every country participating equitably in international affairs",
+            "A unipolar system: a single superpower dominating international affairs",
+            "A bipolar configuration: alliances forming two opposing blocs for mutual confrontation or containment",
+            "Disorderly competition among states: regression to the law of the jungle where the strong bully the weak",
+            "Don't know/Hard to answer",
+        ],
         "positive": None,
     },
     {
@@ -373,7 +509,13 @@ QUESTIONS: list[dict] = [
         "text": "From May 13 to 15, US President Donald Trump paid a state visit to China and held long and friendly talks with President Xi Jinping…",
         "kind": "single",
         "col": "q42",
-        "order": None,
+        "order": [
+            "I warmly welcome it, as it will improve bilateral relations and help both sides manage their differences properly.",
+            "I am relatively optimistic; I acknowledge the positive signals, while recognizing that what truly matters is the follow-up action.",
+            "I remain skeptical; it seems like a short-term, superficial easing of tensions, and I am concerned about potential risks or negative impacts down the road.",
+            "I am disappointed and dissatisfied; the talks did not achieve the expected results, and President Trump's visit to China was a failure.",
+            "Don't know/Hard to answer",
+        ],
         "positive": None,
     },
     {
@@ -383,7 +525,13 @@ QUESTIONS: list[dict] = [
         "text": "US President Trump has repeatedly stated that President Xi is a great leader, that China is a great country…",
         "kind": "single",
         "col": "q44",
-        "order": None,
+        "order": [
+            "Agree",
+            "Basically agree",
+            "Basically disagree",
+            "Disagree",
+            "Don't know/Hard to answer",
+        ],
         "positive": ["Agree", "Basically agree"],
     },
     {
@@ -394,9 +542,9 @@ QUESTIONS: list[dict] = [
         "kind": "single",
         "col": "q45",
         "order": [
-            "Toward friendliness",
-            "Maintain status quo",
             "Toward conflict",
+            "Maintain status quo",
+            "Toward friendliness",
             "Don't know/Hard to answer",
         ],
         "positive": ["Toward friendliness"],
@@ -408,7 +556,7 @@ QUESTIONS: list[dict] = [
         "text": "Which country do you have a more favorable opinion of, China or the U.S.?",
         "kind": "single",
         "col": "q46",
-        "order": ["China", "Almost equal", "U.S.", "Don't know/Hard to answer"],
+        "order": ["China", "U.S.", "Almost equal", "Don't know/Hard to answer"],
         "positive": ["China"],
         "highlight": "China",
     },

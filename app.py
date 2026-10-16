@@ -14,8 +14,17 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from demographics import render_demographic_profiles
-from questions import QUESTIONS, sections
+from demographics import (
+    AGE_ORDER,
+    COUNTRY_ORDER,
+    EDU_ORDER,
+    GENDER_ORDER,
+    INCOME_ORDER,
+    URBAN_ORDER,
+    ordered_present,
+    render_demographic_profiles,
+)
+from questions import QUESTIONS, resolve_order, sections
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "cis2026.parquet"
 
@@ -153,7 +162,7 @@ st.markdown(
         border: 1px solid {COLORS["grid"]};
         border-left: 3px solid {COLORS["teal"]};
         padding: 0.75rem 0.9rem;
-        border-radius: 20px;
+        border-radius: 2px;
         box-shadow: none;
       }}
       div[data-testid="stMetric"] label {{ color: {COLORS["slate"]} !important; }}
@@ -175,7 +184,8 @@ st.markdown(
       .cis-qbox {{
         background: #FFFFFF;
         border: 1px solid {COLORS["grid"]};
-        border-radius: 20px;
+        border-left: 2px solid {COLORS["teal"]};
+        border-radius: 0;
         padding: 0.95rem 1.15rem;
         margin: 0.6rem 0 1rem 0;
       }}
@@ -192,34 +202,41 @@ st.markdown(
       }}
       .cis-note {{ color: {COLORS["slate"]}; font-size: 0.86rem; margin-bottom: 0.6rem; }}
       .cis-avg {{
-        display: inline-block;
-        background: #F3EEE5;
-        border: 1px solid #D3C9B8;
+        display: block;
+        background: transparent;
+        border: none;
+        border-left: 2px solid {COLORS["line"]};
         color: {COLORS["ink"]};
         font-size: 0.88rem;
-        padding: 0.4rem 0.85rem;
-        margin: 0.2rem 0 0.75rem 0;
-        border-radius: 20px;
+        padding: 0.15rem 0 0.15rem 0.75rem;
+        margin: 0.15rem 0 0.85rem 0;
+        border-radius: 0;
       }}
       .cis-chart-wrap {{
         background: #FFFFFF;
-        border: 1px solid {COLORS["grid"]};
-        border-radius: 20px;
-        padding: 0.75rem 0.6rem 0.5rem 0.6rem;
-        margin-bottom: 0.85rem;
+        border: none;
+        border-radius: 0;
+        padding: 0.35rem 0 0.25rem 0;
+        margin-bottom: 0.35rem;
         overflow: visible;
       }}
       .cis-chart-wrap .js-plotly-plot,
       .cis-chart-wrap .plot-container {{
         overflow: visible !important;
       }}
+      /* Clean line between visuals — premium minimal */
+      .cis-sep {{
+        border: none;
+        border-top: 1px solid {COLORS["grid"]};
+        margin: 1.35rem 0 1.5rem 0;
+      }}
 
       .cis-table-wrap {{
         border: 1px solid {COLORS["grid"]};
-        border-radius: 20px;
-        overflow: hidden;
+        border-radius: 0;
+        overflow: auto;
         background: #fff;
-        margin: 0.4rem 0 1rem 0;
+        margin: 0.4rem 0 0.25rem 0;
       }}
       table.cis-table {{
         width: 100%;
@@ -405,11 +422,15 @@ def apply_filters(df: pd.DataFrame, countries, gender, age, urban, edu, income) 
     return out
 
 
-def short_label(s: str, n: int = 28) -> str:
-    s = str(s).replace("Don't know/Hard to answer", "DK / Hard to answer")
-    s = s.replace("Don’t know / Hard to answer", "DK / Hard to answer")
-    s = s.replace("Don't know (don’t read)", "DK")
-    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+def display_label(s: str, n: int | None = None) -> str:
+    """Full answer wording for charts/legends — never truncate for the client."""
+    # `n` kept for call-site compatibility; intentionally unused.
+    _ = n
+    return str(s).strip()
+
+
+# Back-compat alias (no truncation)
+short_label = display_label
 
 
 INCOME_CLASS_NOTE = """
@@ -436,24 +457,27 @@ DK / refuse / missing answers are shown as **Not stated** and excluded from the 
 
 def country_pct_table(df: pd.DataFrame, col: str, order: list[str] | None) -> pd.DataFrame:
     rows = []
+    # Resolve once against the full filtered sample so country charts share one sequence
+    cats_all = resolve_order(df[col].tolist(), order) if order else None
     for ctry, sub in df.groupby("country", sort=True):
         vc = sub[col].astype(str).value_counts(dropna=False)
         total = vc.sum()
         if total == 0:
             continue
-        cats = order if order else list(vc.index)
-        # include any unexpected categories
-        for cat in list(cats) + [x for x in vc.index if x not in (cats or [])]:
-            if cat not in vc.index and order and cat not in order:
-                continue
+        cats = cats_all if cats_all else list(vc.index)
+        for cat in list(cats) + [x for x in vc.index if x not in cats]:
             n = int(vc.get(cat, 0))
+            if n == 0 and order and cat not in vc.index:
+                # Keep QRE slots that appear elsewhere in the sample (0% for this country)
+                if cats_all is None or cat not in cats_all:
+                    continue
             rows.append(
                 {
                     "Country": ctry,
-                    "Answer": short_label(cat, 26),
+                    "Answer": display_label(cat),
                     "Answer_full": cat,
                     "N": n,
-                    "Percent": round(n / total * 100, 1),
+                    "Percent": round(n / total * 100, 1) if total else 0.0,
                 }
             )
     return pd.DataFrame(rows)
@@ -474,42 +498,84 @@ def positive_share(df: pd.DataFrame, col: str, positive: list[str] | None) -> pd
     return pd.DataFrame(rows)
 
 
-def chart_layout(fig, title: str = "", legend_below: bool = False):
-    bottom = 110 if legend_below else 48
+def chart_layout(
+    fig,
+    title: str = "",
+    legend_below: bool = False,
+    legend_items: int = 0,
+    longest_label: int = 0,
+):
+    """Layout with full legend text (no item-width clipping)."""
     top = 28 if title else 16
+    n = legend_items or len(fig.data or [])
+    # Vertical legend below when many / long labels so every word is visible
+    use_v_legend = legend_below and (n > 4 or longest_label > 28)
+    if legend_below:
+        if use_v_legend:
+            bottom = max(100, 28 + n * 18)
+            legend = dict(
+                orientation="v",
+                yanchor="top",
+                y=-0.14,
+                x=0,
+                xanchor="left",
+                bgcolor="rgba(0,0,0,0)",
+                borderwidth=0,
+                font=dict(size=11),
+                itemsizing="trace",
+                tracegroupgap=2,
+                title=dict(text=""),
+            )
+        else:
+            bottom = 88
+            legend = dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.18,
+                x=0,
+                xanchor="left",
+                bgcolor="rgba(0,0,0,0)",
+                borderwidth=0,
+                font=dict(size=11),
+                itemsizing="trace",
+                tracegroupgap=10,
+                title=dict(text=""),
+            )
+    else:
+        bottom = 48
+        legend = dict(
+            orientation="h",
+            y=1.12,
+            x=0,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=11),
+            itemsizing="trace",
+        )
+
     fig.update_layout(
         title=dict(text=title, font=dict(size=15)) if title else None,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#FFFFFF",
         font=dict(color=COLORS["ink"], size=12, family="Source Sans 3, Segoe UI, sans-serif"),
         margin=dict(l=48, r=28, t=top, b=bottom),
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.22,
-            x=0,
-            xanchor="left",
-            bgcolor="rgba(0,0,0,0)",
-            borderwidth=0,
-            font=dict(size=10),
-            itemwidth=90,
-            itemsizing="constant",
-            tracegroupgap=12,
-            title=dict(text="", font=dict(size=1)),
-        )
-        if legend_below
-        else dict(orientation="h", y=1.12, x=0, bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        legend=legend,
         hoverlabel=dict(bgcolor="white", font_size=12),
         bargap=0.28,
-        uniformtext_minsize=9,
-        uniformtext_mode="hide",
+        # Do not hide bar labels when space is tight
+        uniformtext_minsize=8,
+        uniformtext_mode=False,
     )
+    # Extra height so vertical legends never clip
+    if use_v_legend:
+        base_h = fig.layout.height or 420
+        fig.update_layout(height=max(base_h, 360 + n * 16))
     fig.update_xaxes(
         gridcolor="rgba(0,0,0,0)",
         zeroline=False,
         tickangle=0,
         linecolor=COLORS["grid"],
         tickfont=dict(size=11),
+        automargin=True,
     )
     fig.update_yaxes(
         gridcolor="#EEE8DE",
@@ -517,8 +583,14 @@ def chart_layout(fig, title: str = "", legend_below: bool = False):
         linecolor=COLORS["grid"],
         ticksuffix="%",
         tickfont=dict(size=11),
+        automargin=True,
     )
     return fig
+
+
+def after_visual():
+    """Hairline separator between chart blocks."""
+    st.markdown('<hr class="cis-sep"/>', unsafe_allow_html=True)
 
 
 def add_average_line(fig, avg: float):
@@ -585,7 +657,7 @@ def main():
         )
         st.markdown('<hr class="side-rule"/>', unsafe_allow_html=True)
 
-        all_countries = sorted(df_all["country"].dropna().unique().tolist())
+        all_countries = ordered_present(df_all["country"], COUNTRY_ORDER)
         if "sel_countries" not in st.session_state:
             st.session_state.sel_countries = all_countries.copy()
 
@@ -619,36 +691,27 @@ def main():
             st.caption("Narrow the sample, then choose a question.")
             gender = st.selectbox(
                 "Gender",
-                ["All"] + sorted(df_all["gender"].dropna().unique().tolist()),
+                ["All"] + ordered_present(df_all["gender"], GENDER_ORDER),
                 key="flt_gender",
             )
             age = st.selectbox(
                 "Age group",
-                ["All"]
-                + [
-                    x
-                    for x in [
-                        "18-29 years old",
-                        "30-39 years old",
-                        "40-49 years old",
-                        "50-60 years old",
-                        "61-70 years old",
-                    ]
-                    if x in set(df_all["age_group"].dropna())
-                ],
+                ["All"] + ordered_present(df_all["age_group"], AGE_ORDER),
                 key="flt_age",
             )
             urban = st.selectbox(
                 "Urban / rural",
-                ["All"] + sorted(df_all["urban_rural"].dropna().unique().tolist()),
+                ["All"] + ordered_present(df_all["urban_rural"], URBAN_ORDER),
                 key="flt_urban",
             )
             edu = st.selectbox(
                 "Education (quota)",
-                ["All"] + sorted(df_all["education"].dropna().unique().tolist()),
+                ["All"] + ordered_present(df_all["education"], EDU_ORDER),
                 key="flt_edu",
             )
-            income_opts = ["All", "Low", "Medium", "High"]
+            income_opts = ["All"] + [
+                x for x in INCOME_ORDER if x != "Not stated"
+            ]
             if "income_group" in df_all.columns:
                 income = st.selectbox("Income group", income_opts, key="flt_income")
                 with st.expander("How income groups are classified"):
@@ -741,11 +804,11 @@ def main():
                     pct = s.str.startswith(str(highlight)[:50]).mean() * 100
                 rows.append({"Country": ctry, "Percent": round(pct, 1), "N": len(sub)})
             pdf = pd.DataFrame(rows)
-            metric_name = short_label(highlight, 50)
+            metric_name = display_label(highlight)
             st.caption(f"Share selecting: {highlight}")
         else:
             pdf = positive_share(dff, col, positive)
-            metric_name = " / ".join(short_label(p, 28) for p in positive[:3])
+            metric_name = " / ".join(display_label(p) for p in positive[:3])
             st.caption("Summary share (selected favourable / affirmative answers).")
 
         avg = float(pdf["Percent"].mean()) if len(pdf) else 0.0
@@ -781,24 +844,34 @@ def main():
         show = pdf.sort_values("Percent", ascending=False).reset_index(drop=True)
         show = show.rename(columns={"Percent": f"% — {metric_name}"})
         show_table(show)
+        after_visual()
 
     else:
-        # Full distribution — stacked or grouped
+        # Full distribution — all answers, QRE order, full labels
         tab = country_pct_table(dff, col, order)
         if tab.empty:
             st.info("No data for this question under the current filters.")
             return
 
-        # Keep top answers readable; short labels for legend
-        if order:
-            cats = [short_label(x, 26) for x in order]
-            tab["Answer"] = tab["Answer_full"].map(lambda x: short_label(x, 26))
+        resolved = resolve_order(dff[col].tolist(), order) if order else None
+        cats: list[str] | None = None
+        if resolved:
+            cats = [display_label(x) for x in resolved]
+            tab["Answer"] = tab["Answer_full"].map(display_label)
             tab["Answer"] = pd.Categorical(tab["Answer"], categories=cats, ordered=True)
             tab = tab.sort_values(["Country", "Answer"])
         else:
-            top = dff[col].astype(str).value_counts().head(6).index.tolist()
-            tab = tab[tab["Answer_full"].isin(top)].copy()
-            tab["Answer"] = tab["Answer_full"].map(lambda x: short_label(x, 26))
+            # Show every answer present (no top-N hide)
+            cats = (
+                dff[col]
+                .astype(str)
+                .value_counts()
+                .index.map(display_label)
+                .tolist()
+            )
+            tab["Answer"] = tab["Answer_full"].map(display_label)
+            tab["Answer"] = pd.Categorical(tab["Answer"], categories=cats, ordered=True)
+            tab = tab.sort_values(["Country", "Answer"])
 
         fig = px.bar(
             tab,
@@ -807,10 +880,11 @@ def main():
             color="Answer",
             barmode="group",
             color_discrete_sequence=COLORS["countries"],
+            category_orders={"Answer": cats} if cats else None,
         )
         avg_note = ""
         if positive:
-            key = short_label(positive[0], 26)
+            key = display_label(positive[0])
             sub = tab[tab["Answer"] == key]
             if len(sub):
                 avg = float(sub["Percent"].mean())
@@ -821,7 +895,13 @@ def main():
                 )
         fig.update_yaxes(title_text="", range=[0, 100])
         fig.update_xaxes(title_text="")
-        chart_layout(fig, legend_below=True)
+        longest = max((len(str(c)) for c in (cats or [])), default=0)
+        chart_layout(
+            fig,
+            legend_below=True,
+            legend_items=len(cats or []),
+            longest_label=longest,
+        )
         if avg_note:
             st.markdown(avg_note, unsafe_allow_html=True)
         st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
@@ -831,7 +911,11 @@ def main():
         pivot = tab.pivot_table(
             index="Country", columns="Answer", values="Percent", aggfunc="first"
         ).reset_index()
+        if cats:
+            cols = ["Country"] + [c for c in cats if c in pivot.columns]
+            pivot = pivot[[c for c in cols if c in pivot.columns]]
         show_table(pivot.round(1))
+        after_visual()
 
     # ----- Optional demographic slice on same question -----
     st.markdown("#### Breakdown within the filtered sample")
@@ -864,7 +948,16 @@ def main():
                 "Rebuild with prepare_parquet.py and refresh."
             )
             return
-        min_n = 20 if demo_dim == "City (s5)" else 30
+
+        # Fixed QRE option order for demogs — show every slice (no N threshold / Other fold)
+        demo_qre_order = {
+            "Gender": GENDER_ORDER,
+            "Age group": AGE_ORDER,
+            "Urban / rural": URBAN_ORDER,
+            "Education (quota)": EDU_ORDER,
+            "Income group": INCOME_ORDER,
+        }.get(demo_dim)
+
         if positive or highlight:
             hit_rows = []
             for (ctry, demo), sub in dff.groupby(["country", dcol], sort=True, dropna=False):
@@ -885,15 +978,29 @@ def main():
             if hdf.empty or hdf["Hits"].sum() == 0:
                 st.info("No summarised answers in the current filter for this split.")
             else:
+                if demo_qre_order:
+                    demo_seq = ordered_present(hdf["_demo"], demo_qre_order)
+                else:
+                    # Cities: largest first, but keep every city
+                    demo_seq = (
+                        hdf.groupby("_demo", sort=False)["N"]
+                        .sum()
+                        .sort_values(ascending=False)
+                        .index.astype(str)
+                        .tolist()
+                    )
+
                 rows = []
                 for ctry, g in hdf.groupby("Country", sort=True):
                     ctry_hits = int(g["Hits"].sum())
                     if ctry_hits == 0:
                         continue
-                    g_ok = g[g["N"] >= min_n]
-                    g_small = g[g["N"] < min_n]
-                    for _, r in g_ok.iterrows():
-                        demo_lab = short_label(str(r["_demo"]).replace("_", " "), 24)
+                    by_demo = {str(r["_demo"]): r for _, r in g.iterrows()}
+                    for demo_key in demo_seq:
+                        if demo_key not in by_demo:
+                            continue
+                        r = by_demo[demo_key]
+                        demo_lab = display_label(str(r["_demo"]).replace("_", " "))
                         if demo_dim == "City (s5)" and dff["country"].nunique() > 1:
                             demo_lab = f"{ctry}: {demo_lab}"
                         rows.append(
@@ -902,76 +1009,32 @@ def main():
                                 demo_dim: demo_lab,
                                 "Percent": round(r["Hits"] / ctry_hits * 100, 1),
                                 "N": int(r["N"]),
-                                "_hits": int(r["Hits"]),
-                            }
-                        )
-                    other_hits = int(g_small["Hits"].sum())
-                    other_n = int(g_small["N"].sum())
-                    if other_hits > 0 or other_n > 0:
-                        oth_lab = "Other"
-                        if demo_dim == "City (s5)" and dff["country"].nunique() > 1:
-                            oth_lab = f"{ctry}: Other"
-                        rows.append(
-                            {
-                                "Country": ctry,
-                                demo_dim: oth_lab,
-                                "Percent": round(other_hits / ctry_hits * 100, 1),
-                                "N": other_n,
-                                "_hits": other_hits,
                             }
                         )
                 bdf = pd.DataFrame(rows)
                 if bdf.empty:
-                    st.info(
-                        f"Not enough cases in each slice (minimum {min_n}) to show this split."
-                    )
+                    st.info("No cases to show for this demographic split.")
                 else:
-                    # Cap city labels; fold extras into Other so totals stay 100%
-                    if demo_dim == "City (s5)":
-                        parts = []
-                        for ctry, g in bdf.groupby("Country", sort=True):
-                            is_other = g[demo_dim].astype(str).str.endswith("Other")
-                            main = g[~is_other]
-                            already = g[is_other]
-                            if len(main) > 12:
-                                top = main.nlargest(12, "N")
-                                rest = main.drop(index=top.index)
-                                oth_lab = (
-                                    f"{ctry}: Other"
-                                    if dff["country"].nunique() > 1
-                                    else "Other"
-                                )
-                                oth_pct = float(already["Percent"].sum()) + float(
-                                    rest["Percent"].sum()
-                                )
-                                oth_n = int(already["N"].sum()) + int(rest["N"].sum())
-                                oth_hits = int(already["_hits"].sum()) + int(
-                                    rest["_hits"].sum()
-                                )
-                                parts.append(top)
-                                parts.append(
-                                    pd.DataFrame(
-                                        [
-                                            {
-                                                "Country": ctry,
-                                                demo_dim: oth_lab,
-                                                "Percent": round(oth_pct, 1),
-                                                "N": oth_n,
-                                                "_hits": oth_hits,
-                                            }
-                                        ]
-                                    )
-                                )
-                                st.caption(
-                                    "Showing the 12 largest cities (s5); remainder in Other."
-                                )
-                            else:
-                                parts.append(g)
-                        bdf = pd.concat(parts, ignore_index=True)
+                    if demo_qre_order:
+                        legend_keys = [
+                            display_label(x.replace("_", " ")) for x in demo_seq
+                        ]
+                        present_labs = set(bdf[demo_dim].astype(str))
+                        legend_order = [x for x in legend_keys if x in present_labs]
+                        legend_order += [
+                            x
+                            for x in bdf[demo_dim].astype(str).unique()
+                            if x not in legend_order
+                        ]
+                    else:
+                        legend_order = list(
+                            dict.fromkeys(bdf[demo_dim].astype(str).tolist())
+                        )
 
                     st.caption(
                         "Each bar = share of that country’s summarised answers in this slice. "
-                        "Bars for a country total 100%."
+                        "Bars for a country total 100%. "
+                        "All groups shown · questionnaire sequence."
                     )
                     fig2 = px.bar(
                         bdf,
@@ -980,11 +1043,24 @@ def main():
                         color=demo_dim if demo_dim != "City (s5)" else "Country",
                         barmode="group",
                         color_discrete_sequence=COLORS["countries"],
+                        category_orders=(
+                            {demo_dim: legend_order}
+                            if demo_dim != "City (s5)"
+                            else None
+                        ),
                     )
                     fig2.update_yaxes(range=[0, 100])
+                    if demo_dim == "City (s5)":
+                        fig2.update_xaxes(tickangle=-35, automargin=True)
                     avg2 = float(bdf["Percent"].mean())
                     add_average_line(fig2, avg2)
-                    chart_layout(fig2, legend_below=True)
+                    longest = max((len(str(x)) for x in legend_order), default=0)
+                    chart_layout(
+                        fig2,
+                        legend_below=True,
+                        legend_items=len(legend_order),
+                        longest_label=longest,
+                    )
                     st.markdown(
                         f'<div class="cis-avg">Dotted grey line = average across slices '
                         f"({avg2:.1f}%)</div>",
@@ -995,14 +1071,23 @@ def main():
                         fig2, use_container_width=True, config={"displayModeBar": False}
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
-                    show_table(
-                        bdf.drop(columns=["_hits"], errors="ignore").sort_values(
+
+                    tbl = bdf.copy()
+                    if demo_qre_order and demo_dim in tbl.columns:
+                        cat = pd.Categorical(
+                            tbl[demo_dim],
+                            categories=legend_order,
+                            ordered=True,
+                        )
+                        tbl = tbl.assign(**{demo_dim: cat}).sort_values(
+                            ["Country", demo_dim]
+                        )
+                    else:
+                        tbl = tbl.sort_values(
                             ["Country", "Percent"], ascending=[True, False]
                         )
-                    )
-                    st.caption(
-                        f"Groups with fewer than {min_n} respondents are folded into Other."
-                    )
+                    show_table(tbl)
+                    after_visual()
         else:
             st.caption(
                 "Pick a summary-style question to use the demographic split view, or use the full answer mix above."

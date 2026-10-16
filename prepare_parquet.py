@@ -6,12 +6,47 @@ from pathlib import Path
 
 import pandas as pd
 
-from questions import QUESTIONS
+from demographics import AGE_CODE_TO_LABEL, AGE_ORDER
+from questions import QUESTIONS, _norm_label
 
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
 SRC = ROOT / "S22526_China_All_Countries_Final_WIDE successful+rejected 5-oct-2026 working (2).xlsx"
 OUT = BASE / "data" / "cis2026.parquet"
+
+DK_CANONICAL = "Don't know/Hard to answer"
+
+
+def normalize_answer(val) -> str:
+    """Collapse DK / refuse / 999 codes to one QRE wording."""
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    if not s or s.lower() in {"nan", "none"}:
+        return ""
+    if _norm_label(s) == "__dk__":
+        return DK_CANONICAL
+    return s
+
+
+def classify_age_group(s3, s3_label) -> str:
+    """Map S3 code / label to the QRE age-band wording (codes 1–7)."""
+    if pd.notna(s3):
+        try:
+            code = int(float(s3))
+            if code in AGE_CODE_TO_LABEL:
+                return AGE_CODE_TO_LABEL[code]
+        except (TypeError, ValueError):
+            pass
+    lab = "" if pd.isna(s3_label) else str(s3_label).strip()
+    if lab in AGE_ORDER:
+        return lab
+    # tolerate minor wording drift
+    low = lab.lower()
+    for opt in AGE_ORDER:
+        if low == opt.lower() or low.startswith(opt.lower()[:12]):
+            return opt
+    return lab or "Not stated"
 
 COUNTRY_S9 = {
     "Laos": "s9_laos",
@@ -29,6 +64,8 @@ COUNTRY_S9 = {
 DEMO_COLS = [
     "s0",
     "s1",
+    "s2",
+    "s3",
     "s3_label",
     "s4",
     "s5",
@@ -127,7 +164,7 @@ def main():
     out = df[cols].copy()
     for c in Q_COLS:
         if c in out.columns:
-            out[c] = out[c].map(lambda x: "" if pd.isna(x) else str(x))
+            out[c] = out[c].map(normalize_answer)
 
     income_raw = []
     for _, row in out.iterrows():
@@ -145,7 +182,11 @@ def main():
 
     out["country"] = out["s0"].map(country_label)
     out["gender"] = out["s4"].astype(str)
-    out["age_group"] = out["s3_label"].astype(str)
+    s3 = out["s3"] if "s3" in out.columns else pd.Series([pd.NA] * len(out))
+    s3_lab = out["s3_label"] if "s3_label" in out.columns else pd.Series([pd.NA] * len(out))
+    out["age_group"] = [
+        classify_age_group(a, b) for a, b in zip(s3.tolist(), s3_lab.tolist())
+    ]
     out["urban_rural"] = out["s5_1"].astype(str)
     out["education"] = out["edu_quota"].astype(str)
     out["city"] = out["s5"].astype(str)

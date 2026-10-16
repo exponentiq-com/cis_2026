@@ -29,36 +29,74 @@ DISPLAY_COUNTRY = {"DRC (Congo)": "Congo"}
 INACTIVE = {"Housewife", "Student", "Unemployed/ laid off/ retired"}
 LANG_MIN = 100  # language quota floor
 
+# S3 age bands — questionnaire order (codes 1–7). Codes 1 and 7 are #END
+# screen-outs; they appear only if present in the loaded sample.
 AGE_ORDER = [
+    "Under the age of 18",
     "18-29 years old",
     "30-39 years old",
     "40-49 years old",
     "50-60 years old",
     "61-70 years old",
+    "Over 70 years old",
 ]
+AGE_CODE_TO_LABEL = {
+    1: "Under the age of 18",
+    2: "18-29 years old",
+    3: "30-39 years old",
+    4: "40-49 years old",
+    5: "50-60 years old",
+    6: "61-70 years old",
+    7: "Over 70 years old",
+}
 AGE_SHORT = {
+    "Under the age of 18": "<18",
     "18-29 years old": "18-29",
     "30-39 years old": "30-39",
     "40-49 years old": "40-49",
     "50-60 years old": "50-60",
     "61-70 years old": "61-70",
+    "Over 70 years old": "70+",
 }
+# Colours keyed by full QRE age wording (and short aliases for legacy maps)
 AGE_COLORS = {
+    "Under the age of 18": "#6B7F5A",
+    "18-29 years old": "#1B3A5F",
+    "30-39 years old": "#3D6BA5",
+    "40-49 years old": "#2F6F6A",
+    "50-60 years old": "#C4A035",
+    "61-70 years old": "#8B4513",
+    "Over 70 years old": "#5C6B73",
+    "<18": "#6B7F5A",
     "18-29": "#1B3A5F",
     "30-39": "#3D6BA5",
     "40-49": "#2F6F6A",
     "50-60": "#C4A035",
     "61-70": "#8B4513",
+    "70+": "#5C6B73",
 }
 
+# Demographic option sequences — same order as screening / quota questions in QRE
+GENDER_ORDER = ["Male", "Female"]
+URBAN_ORDER = ["Urban", "Rural"]
+EDU_ORDER = ["Bachelor and above", "Below Bachelor"]
+INCOME_ORDER = ["Low", "Medium", "High", "Not stated"]
+WORK_ORDER = ["Working", "Non-working"]
+
 CROSS_VARS = {
-    "Gender": ("gender", ["Male", "Female"]),
+    "Gender": ("gender", GENDER_ORDER),
     "Age group": ("age_group", AGE_ORDER),
-    "Urban / rural": ("urban_rural", ["Urban", "Rural"]),
-    "Education": ("education", ["Bachelor and above", "Below Bachelor"]),
-    "Work status": ("work_status", ["Working", "Non-working"]),
-    "Income group": ("income_group", ["Low", "Medium", "High", "Not stated"]),
+    "Urban / rural": ("urban_rural", URBAN_ORDER),
+    "Education": ("education", EDU_ORDER),
+    "Work status": ("work_status", WORK_ORDER),
+    "Income group": ("income_group", INCOME_ORDER),
 }
+
+
+def ordered_present(values, order: list[str]) -> list[str]:
+    """Keep QRE sequence; only include labels that appear in data."""
+    present = {str(v) for v in values if pd.notna(v) and str(v) not in ("", "nan", "None")}
+    return [x for x in order if x in present] + sorted(present - set(order))
 
 
 def _disp(ctry: str) -> str:
@@ -128,9 +166,54 @@ def _show_table(df: pd.DataFrame):
     )
 
 
-def _chart_frame(fig, title: str, *, has_legend: bool = True, left_margin: int = 120):
+def _chart_frame(
+    fig,
+    title: str,
+    *,
+    has_legend: bool = True,
+    left_margin: int = 120,
+    legend_items: int = 0,
+):
     existing_h = fig.layout.height
-    bottom = 110 if has_legend else 56
+    n = legend_items or (len(fig.data) if has_legend else 0)
+    # Full legend text — vertical list when several categories
+    if has_legend and n > 3:
+        bottom = max(100, 28 + n * 18)
+        legend = dict(
+            orientation="v",
+            yanchor="top",
+            y=-0.14,
+            x=0,
+            xanchor="left",
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0,
+            font=dict(size=11, color=INK),
+            title=dict(text=""),
+            itemsizing="trace",
+            tracegroupgap=2,
+        )
+        height = max(existing_h or 420, 360 + n * 16)
+    elif has_legend:
+        bottom = 88
+        legend = dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            x=0.5,
+            xanchor="center",
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0,
+            font=dict(size=11, color=INK),
+            title=dict(text=""),
+            itemsizing="trace",
+            tracegroupgap=12,
+        )
+        height = existing_h if existing_h else 400
+    else:
+        bottom = 56
+        legend = dict(orientation="h", y=1.05, x=0, bgcolor="rgba(0,0,0,0)")
+        height = existing_h if existing_h else 340
+
     fig.update_layout(
         title=dict(
             text=title,
@@ -144,34 +227,21 @@ def _chart_frame(fig, title: str, *, has_legend: bool = True, left_margin: int =
         plot_bgcolor="#FFFFFF",
         font=dict(color=INK, size=12, family="Source Sans 3, Segoe UI, sans-serif"),
         margin=dict(l=left_margin, r=48, t=56, b=bottom, pad=4),
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.22,
-            x=0.5,
-            xanchor="center",
-            bgcolor="rgba(0,0,0,0)",
-            borderwidth=0,
-            font=dict(size=11, color=INK),
-            title=dict(text=""),
-            itemsizing="constant",
-            itemwidth=40,
-            tracegroupgap=16,
-            entrywidthmode="pixels",
-            entrywidth=88,
-        ),
+        legend=legend,
         legend_title_text="",
         bargap=0.22,
-        height=existing_h if existing_h else (420 if has_legend else 360),
-        uniformtext_minsize=9,
-        uniformtext_mode="hide",
+        height=height,
+        uniformtext_minsize=8,
+        uniformtext_mode=False,
     )
-    # Keep axis titles off the top so they never collide with the chart title
-    fig.update_xaxes(title_text="", title=None)
-    fig.update_yaxes(title_text="", title=None, automargin=True, ticklabelposition="outside")
+    fig.update_xaxes(title_text="", title=None, automargin=True)
+    fig.update_yaxes(
+        title_text="", title=None, automargin=True, ticklabelposition="outside"
+    )
     st.markdown('<div class="cis-chart-wrap">', unsafe_allow_html=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<hr class="cis-sep"/>', unsafe_allow_html=True)
 
 
 def _stacked_100(
@@ -252,7 +322,7 @@ def _stacked_100(
     fig.update_yaxes(title_text="", automargin=True)
     if threshold is not None:
         fig.add_vline(x=threshold, line_dash="dot", line_color=GOLD, line_width=1.8)
-    _chart_frame(fig, title, has_legend=True)
+    _chart_frame(fig, title, has_legend=True, legend_items=len(cat_order))
     if threshold is not None:
         st.caption(f"Dotted line = {threshold_label or 'reference'} ({threshold:g}%).")
 
@@ -361,7 +431,7 @@ def render_charts(df: pd.DataFrame):
     _stacked_100(
         df,
         "gender",
-        ["Male", "Female"],
+        ordered_present(df["gender"], GENDER_ORDER),
         {"Male": NAVY, "Female": GOLD},
         "Gender",
     )
@@ -370,26 +440,28 @@ def render_charts(df: pd.DataFrame):
     _stacked_100(
         df,
         "urban_rural",
-        ["Urban", "Rural"],
+        ordered_present(df["urban_rural"], URBAN_ORDER),
         {"Urban": NAVY, "Rural": RURAL},
         "Urban / rural",
     )
 
     st.markdown("#### Age")
+    age_cats = ordered_present(df["age_group"], AGE_ORDER)
     _stacked_100(
         df,
         "age_group",
-        AGE_ORDER,
+        age_cats,
         AGE_COLORS,
         "Age",
-        label_map=AGE_SHORT,
+        # Full QRE age wording in legend (no short codes / truncation)
+        label_map=None,
     )
 
     st.markdown("#### Income")
     _stacked_100(
         df,
         "income_group",
-        ["Low", "Medium", "High", "Not stated"],
+        ordered_present(df["income_group"], INCOME_ORDER),
         {
             "Low": "#6B7F5A",
             "Medium": NAVY,
@@ -477,11 +549,7 @@ def render_cross_tab(df: pd.DataFrame):
     ct = ct[[x for x in c_order if x in ct.columns]]
     st.caption(f"{row_var} × {col_var} · {scope}")
     out = ct.reset_index().rename(columns={ct.index.name or "index": row_var})
-    if row_var == "Age group" and row_var in out.columns:
-        out[row_var] = out[row_var].map(lambda x: AGE_SHORT.get(x, x))
-    for col in list(out.columns):
-        if col in AGE_SHORT:
-            out = out.rename(columns={col: AGE_SHORT[col]})
+    # Keep full QRE age / option wording in the cross-tab
     _show_table(out)
 
 
